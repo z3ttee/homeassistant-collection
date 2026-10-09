@@ -1,0 +1,90 @@
+blueprint:
+  name: "Heizperiode erzwingen (mit optionalem Lüften-Override)"
+  description: "Erzwingt den Modus 'heat' während der Heizperiode und 'off' außerhalb. Optional kann ein Lüften-Schalter eingebunden werden."
+  domain: automation
+  input:
+    target_thermostats:
+      name: Thermostate
+      description: Die zu steuernden Thermostate (Geräte, Entitäten oder Räume)
+      selector:
+        target:
+          entity:
+            domain: climate
+    start_date_helper:
+      name: Beginn der Heizperiode
+      description: Text-Helfer für den Start (DD.MM)
+      selector:
+        entity:
+          domain: input_text
+    end_date_helper:
+      name: Ende der Heizperiode
+      description: Text-Helfer für das Ende (DD.MM)
+      selector:
+        entity:
+          domain: input_text
+    override_switch:
+      name: Lüften-Schalter (Optional)
+      description: (Optional) Wenn dieser Schalter AN ist, werden alle Thermostate auf 'off' gesetzt.
+      default: {}
+      selector:
+        entity:
+          domain: input_boolean
+
+trigger:
+  - platform: time
+    at: "00:00:01"
+  - platform: state
+    entity_id:
+      - !input start_date_helper
+      - !input end_date_helper
+  - platform: homeassistant
+    event: start
+
+variables:
+  start_helper_id: !input start_date_helper
+  end_helper_id: !input end_date_helper
+  override_switch_id: !input override_switch
+
+action:
+  - choose:
+      # FALL 1: Lüften-Schalter ist konfiguriert UND aktiv -> 'off'
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ override_switch_id != {} and states(override_switch_id) == 'on' }}
+        sequence:
+          - service: climate.set_hvac_mode
+            target: !input target_thermostats
+            data:
+              hvac_mode: "off"
+
+      # FALL 2: Heizperiode ist AKTIV -> 'heat'
+      - conditions:
+          - condition: template
+            value_template: >-
+              {% set raw_start = states(start_helper_id) %}
+              {% set raw_end = states(end_helper_id) %}
+
+              {% set start = raw_start.split('.')[1] ~ '-' ~ raw_start.split('.')[0] if '.' in raw_start else raw_start %}
+              {% set end = raw_end.split('.')[1] ~ '-' ~ raw_end.split('.')[0] if '.' in raw_end else raw_end %}
+              {% set today = now().strftime('%m-%d') %}
+
+              {% if start <= end %}
+                {{ start <= today <= end }}
+              {% else %}
+                {{ today >= start or today <= end }}
+              {% endif %}
+        sequence:
+          - service: climate.set_hvac_mode
+            target: !input target_thermostats
+            data:
+              hvac_mode: heat
+
+    # FALL 3: Außerhalb der Heizperiode -> 'off'
+    default:
+      - service: climate.set_hvac_mode
+        target: !input target_thermostats
+        data:
+          hvac_mode: "off"
+
+mode: restart
